@@ -1,0 +1,99 @@
+{
+  "Comment": "A description of my state machine",
+  "StartAt": "GetObject",
+  "States": {
+    "GetObject": {
+      "Type": "Task",
+      "Parameters": {
+        "Bucket.$": "$.detail.bucket.name",
+        "Key.$": "$.detail.object.key"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "ResultSelector": {
+        "detail.$": "States.StringToJson($.Body)"
+      },
+      "Next": "Map"
+    },
+    "Map": {
+      "Type": "Map",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "validate_orders_data",
+        "States": {
+          "validate_orders_data": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "Payload.$": "$",
+              "FunctionName": "arn:aws:lambda:us-east-1:851725469799:function:order-json:$LATEST"
+            },
+            "ResultSelector": {
+              "contact-info.$": "$.Payload.contact-info",
+              "order-info.$": "$.Payload.order-info"
+            },
+            "Next": "DynamoDB PutItem",
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.TaskFailed"
+                ],
+                "Next": "SQS SendMessage",
+                "ResultPath": null
+              }
+            ]
+          },
+          "DynamoDB PutItem": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Parameters": {
+              "TableName": "ecom-orders",
+              "Item": {
+                "OrderId": {
+                  "S.$": "$.order-info.OrderId"
+                },
+                "item-id": {
+                  "S.$": "$.order-info.item-id"
+                },
+                "qty": {
+                  "S.$": "$.order-info.qty"
+                },
+                "contact-name": {
+                  "S.$": "$.contact-info.name"
+                },
+                "contact-email": {
+                  "S.$": "$.contact-info.email"
+                }
+              }
+            },
+            "End": true,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.TaskFailed"
+                ],
+                "BackoffRate": 2,
+                "IntervalSeconds": 1,
+                "MaxAttempts": 3
+              }
+            ]
+          },
+          "SQS SendMessage": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage",
+            "Parameters": {
+              "MessageBody.$": "$",
+              "QueueUrl": "https://sqs.us-east-1.amazonaws.com/851725469799/order-data-dlq"
+            },
+            "End": true
+          }
+        }
+      },
+      "End": true,
+      "InputPath": "$.detail",
+      "ItemsPath": "$.orders",
+      "MaxConcurrency": 5
+    }
+  }
+}
